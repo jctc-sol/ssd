@@ -6,19 +6,34 @@ from model.prediction import PredLayers
 from model.utils import add_module, create_pboxes
 
 
+class AdaptiveScaler(nn.Module):
+    
+    def __init__(self, n, init_scale):
+        super(AdaptiveScaler, self).__init__()
+        
+        # lower level features (ftmap4) have considerably larger scales, we take the L2 norm and rescale
+        # Rescale factor is initially set at 20, but it is learnable for each channel during back-prop
+        self.rescale = nn.Parameter(torch.FloatTensor(1, n, 1, 1))
+        nn.init.constant_(self.rescale, init_scale)
+        
+
+    def forward(self, x):
+        norm = x.pow(2).sum(dim=1, keepdim=True).sqrt()
+        x = x / norm * self.rescale
+        return x
+        
+
 class SSD300(nn.Module):
     
     def __init__(self, n_classes, device=None):
         super(SSD300, self).__init__()
         
-        if device is None:
-            self.device = "cpu" 
-        else:
-            self.device = device
+        self.device = device
         self.n_classes = n_classes
         
         # network components
         self.base = VGGBase()
+        self.rescaler = AdaptiveScaler(512, 20)
         self.aux  = AuxLayers()
         self.pred = PredLayers(self.n_classes)
         
@@ -26,11 +41,6 @@ class SSD300(nn.Module):
         self.pboxes = create_pboxes()
         self.pboxes.to(self.device)
         
-        # lower level features (ftmap4) have considerably larger scales, we take the L2 norm and rescale
-        # Rescale factor is initially set at 20, but it is learnable for each channel during back-prop
-        self.ftmap4_rescale = nn.Parameter(torch.FloatTensor(1, 512, 1, 1))
-        nn.init.constant_(self.ftmap4_rescale, 20) # init values to 20
-
 #         # instantiate a coordinate transformation object to decipher object location
 #         # output in prior box offset coordinate format to center coordinate format
 #         self.oc2cc = OffsetCoord()
@@ -55,19 +65,18 @@ class SSD300(nn.Module):
         ftmap4, ftmap7 = self.base(image)                     
         
         # Normalize conv4_3 with L2 norm & rescale using the learnable scale factor for each channel
-        norm = ftmap4.pow(2).sum(dim=1, keepdim=True).sqrt()  # (N, 1, 38, 38)
-        ftmap4 = ftmap4 / norm * self.ftmap4_rescale          # (N, 512, 38, 38)
+        ftmap4 = self.rescaler(ftmap4)
     
         # Run auxiliary convolutions (higher level feature map generators)
         # (N, 512, 10, 10),  (N, 256, 5, 5), (N, 256, 3, 3), (N, 256, 1, 1)
         ftmap8, ftmap9, ftmap10, ftmap11 = self.aux(ftmap7)
 
-        # Run prediction convolutions (predict offsets w.r.t prior-boxes and classes in each resulting localization box)
+        # Run prediction convolutions (predict offsets w.r.t prior-boxes and classes in each resulting localization box)        
         # (N, 8732, 4), (N, 8732, n_classes)
         locations, cls_scores = self.pred(ftmap4, ftmap7, ftmap8, ftmap9, ftmap10, ftmap11)
 
         return locations, cls_scores
-                    
+
 
     def detect_objects(self, predicted_boxes, predicted_scores, min_score_threshold, max_overlap_threshold, top_k):
         """
@@ -181,7 +190,7 @@ class SSD300(nn.Module):
                 image_scores.append(torch.FloatTensor([0.]).to(self.device))
 
             # Concatenate into single tensors
-            image_boxes = torch.cat(image_boxes, dim=0)  # (n_qualified, 4)
+            image_boxes  = torch.cat(image_boxes, dim=0)  # (n_qualified, 4)
             image_labels = torch.cat(image_labels, dim=0)  # (n_qualified)
             image_scores = torch.cat(image_scores, dim=0)  # (n_qualified)
             n_objects = image_scores.size(0)

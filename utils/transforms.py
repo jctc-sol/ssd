@@ -8,46 +8,8 @@ from torchvision import transforms, utils
 from PIL import Image, ImageDraw
 from pycocotools.coco import COCO
 from pycocotools import mask
-
-
-def drawSample(sample):
-    """
-    Visualize the given sample by showing the image and
-    draws bounding boxes of target objects in the image
-    """
-    img  = sample['image']
-    if isinstance(img, torch.Tensor):
-        tf = transforms.ToPILImage()
-        img = tf(img)
-    draw = ImageDraw.Draw(img, 'RGBA')
-    for i in range(sample['boxes'].shape[0]):
-        # go through all boxes & draw
-        # bbox coordinates are provides in terms of [x,y,width,height], and
-        # box coordinates are measured from the top left image corner and are 0-indexed
-        box = list(sample['boxes'][i,:])
-        x0, y0 = box[0], box[1]
-        x1, y1 = x0+box[2], y0+box[3]
-        draw.rectangle([x0,y0,x1,y1], outline='orange', width=4)
-#         # TODO: draw instance segmentation maps
-#         # go through all segmaps & draw
-#         segmap = sample['segs'][i][0]
-#         draw.polygon(segmap, fill=(0, 255, 255, 125))
-    plt.imshow(img); plt.axis('off')
-
-    
-def show_augmented_samples(ds, sample_idx=0, n=10):
-    """
-    Helper function to visualize the same image sample
-    specified by `sample_idx`, `n` number of times; 
-    each subjected to data augmentations applied to 
-    dataset `ds`.
-    """
-    samples_per_row = 5
-    num_rows = int(n/samples_per_row) if n%samples_per_row==0 else int(n/samples_per_row)+1
-    plt.figure(figsize=(16, 2*num_rows))
-    for i in range(n):
-        plt.subplot(num_rows, samples_per_row, i+1)
-        drawSample(ds[sample_idx])    
+from utils.coordinates import BoundaryCoord, OffsetCoord
+from utils.overlap import find_jaccard_overlap
 
 
 class PhotometricDistort(object):
@@ -168,32 +130,6 @@ class Resize(object):
         sample['image'] = new_image
         sample['boxes'] = boxes
         return sample
-
-    
-class CocoBoxToFracBoundaryBox(object):
-    """
-    Convert bounding box coordinates from COCO dataset format (x,y,w,h)
-    to fractional boundary box coordinates (x_min,y_min,x_max,y_max)
-    where each value is normalized between [0,1]
-    """
-    def __init__(self):
-        pass
-    
-    def __call__(self, sample):
-        image = sample['image']                
-        height, width = image.size()[1], image.size()[2]
-        # convert COCO coordinates to bounding box coordinates
-        boxes = sample['boxes']
-        boxes[:,2] = boxes[:,0] + boxes[:,2]
-        boxes[:,3] = boxes[:,1] + boxes[:,3]
-        # normalize coordinates by image dims
-        boxes[:,0] = boxes[:,0] / width
-        boxes[:,1] = boxes[:,1] / height
-        boxes[:,2] = boxes[:,2] / width
-        boxes[:,3] = boxes[:,3] / height
-        # boxes = np.clip(boxes, 0, 1)
-        sample['boxes'] = boxes
-        return sample
         
 
 class Normalize(object):
@@ -283,112 +219,116 @@ class BoxToTensor(object):
         return tensor.numpy()
 
     
-class BoundaryCoord():
+class CocoBoxToFracBoundaryBox(object):
     """
-    Encodes/decodes the bounding box Center coordinates (x_c, y_c, w_c, h_c) to/from Boundary coordinates 
-    (x_1, y_1, x_2, y_2) where (x_1, y_1) specifies the upper-left corner and (x_2, y_2) the lower-right
-    corner of the boundary of bounding boxes
-    """        
-    def encode(self, boxes):
-        """
-        Encodes bounding boxes tensor in Center coordinates to Boundary coordinates.
-        
-        boxes: bounding boxes tensor in center coordinates (x_c, y_c, w_c, h_c) format
-        return: bounding boxes tensor in boundary coordinates (x_1, y_1, x_2, y_2) format
-        """
-        w_c, h_c = boxes[:,2], boxes[:,3]
-        x1 = boxes[:,0] - w_c/2.0
-        y1 = boxes[:,1] - h_c/2.0
-        x2 = boxes[:,0] + w_c/2.0
-        y2 = boxes[:,1] + h_c/2.0
-        coords = [x1, y1, x2, y2]
-        return torch.clip(torch.cat([c.unsqueeze(-1) for c in coords], dim=-1), 0, 1)
-        
-    def decode(self, boxes):
-        """
-        Decodes bounding boxes tensor in Boundary coordinates to Center coordinates.
-        
-        boxes: bounding boxes tensor in boundary coordinates (x_1, y_1, x_2, y_2) format
-        return: bounding boxes tensor in center coordinates (x_c, y_c, w_c, h_c) format
-        """
-        w_c = boxes[:,2] - boxes[:,0]
-        h_c = boxes[:,3] - boxes[:,1]
-        x_c = boxes[:,0] + w_c/2.0
-        y_c = boxes[:,1] + h_c/2.0
-        coords = [x_c, y_c, w_c, h_c]
-        return torch.cat([c.unsqueeze(-1) for c in coords], dim=-1)
-    
-
-class OffsetCoord():
-    """
-    Encodes/decodes the center coordinates (x_c, y_c, w_c, h_c) of bounding boxes relative to the prior 
-    boxes (from SSD, expressed also in center coordinates) in terms of offset coordinates. This offset 
-    coordinates is the form that is output by the SSD locator prediction. The offset coordinates have 
-    the following relation:
-    (dx, dy) = ((x_c - x_p)/(x_p/10), (y_c - y_p)/(y_p/10)); and 
-    (dw, dh) = (log(w_c/(w_p*5)), log(h_c/(h_p*5)))
+    Convert bounding box coordinates from COCO dataset format (x,y,w,h)
+    to fractional boundary box coordinates (x_min,y_min,x_max,y_max)
+    where each value is normalized between [0,1] to the height and width
+    of the image.
     """
     def __init__(self):
         pass
-
+    
+    def __call__(self, sample):
+        boxes = sample['boxes']
+        height, width = sample['dims'][0], sample['dims'][1]
+        sample['boxes'] = self.encode(height, width, boxes)
+        return sample
+    
+    def encode(self, height, width, boxes):             
+        # convert COCO coordinates to fractional bounding box coordinates 
+        # with coordinate values [0,1]
+        boxes[:,2] = boxes[:,0] + boxes[:,2]
+        boxes[:,3] = boxes[:,1] + boxes[:,3]
+        # normalize coordinates by image dims
+        boxes[:,0] = boxes[:,0] / width
+        boxes[:,1] = boxes[:,1] / height
+        boxes[:,2] = boxes[:,2] / width
+        boxes[:,3] = boxes[:,3] / height        
+        return boxes
+    
+    def decode(self, height, width, boxes):
+        # convert fractional bounding box coordinates back to COCO coordinates
+        # convert scale 
+        boxes[:,0] = boxes[:,0] * width
+        boxes[:,1] = boxes[:,1] * height
+        boxes[:,2] = boxes[:,2] * width
+        boxes[:,3] = boxes[:,3] * height
+        # get height and width
+        boxes[:,2] = boxes[:,2] - boxes[:,0]
+        boxes[:,3] = boxes[:,3] - boxes[:,1]
+    
+    
+class AssignObjToPbox(object):
+    """
+    Assigns each ground truth object in the image to the best prior bounding box
+    of the network, based on best intersection over union (IoU, aka Jaccard 
+    overlap)
+    """
+    def __init__(self, pboxes, threshold):
+        self.pboxes_bc = pboxes
+        self.n_pboxes  = pboxes.size()[1]
+        self.boundaryCoord = BoundaryCoord()
+        self.offsetCoord   = OffsetCoord()
+        self.threshold = threshold
         
-    def encode(self, cxcy, priors_cxcy):        
-        """
-        converts cxcy (center coordinates) to oxoy (offset coordinates)        
-        cxcy: bounding box in center-coordinate format
-        prior_cxcy: prior box in center-coordinate format
-        """
-        oxoy = (cxcy[:,:2] - priors_cxcy[:,:2]) / (priors_cxcy[:,2:] / 10)
-        owoh = torch.log(cxcy[:,2:] / priors_cxcy[:,2:]) * 5
-        return torch.cat([oxoy, owoh], dim=1)
-    
-    
-    def decode(self, oxoy, priors_cxcy):
-        """
-        converts oxoy (offset coordinates) back to cxcy (center coordinates)
-        oxoy: bounding boxes in offset-coordinate format wrt SSD's prior bounding boxes
-        """
-        cxcy = oxoy[:,:2] * priors_cxcy[:,2:] / 10 + priors_cxcy[:,:2]
-        cwch = torch.exp(oxoy[:,2:] / 5) * priors_cxcy[:,2:]
-        return torch.cat([cxcy, cwch], dim=1)
-    
-    
-def find_intersection(set_1, set_2):
-    """
-    Find the intersection of every box combination between two sets of boxes that are in 
-    boundary coordinates (x_1, y_1, x_2, y_2) that define the upper left & lower right corner
-    boundaries of the bounding box
-    :param set_1: set 1, a tensor of dimensions (n1, 4) in boundary coordinates
-    :param set_2: set 2, a tensor of dimensions (n2, 4) in boundary coordinates
-    :return: intersection of each of the boxes in set 1 with respect to each of the boxes 
-             in set 2, a tensor of dimensions (n1, n2)
-    """    
-    # Following code from: https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection/blob/master/utils.py
-    # PyTorch auto-broadcasts singleton dimensions
-    lower_bounds = torch.max(set_1[:, :2].unsqueeze(1), set_2[:, :2].unsqueeze(0))  # (n1, n2, 2)
-    upper_bounds = torch.min(set_1[:, 2:].unsqueeze(1), set_2[:, 2:].unsqueeze(0))  # (n1, n2, 2)
-    intersection_dims = torch.clamp(upper_bounds - lower_bounds, min=0)  # (n1, n2, 2)
-    return intersection_dims[:, :, 0] * intersection_dims[:, :, 1]  # (n1, n2)
+    def __call__(self, sample):
+        # get ground truth box coordinates (in boundary coordinates), and
+        # ground truth object class labels        
+        true_boxes_bc = sample['boxes']
+        true_classes  = sample['cats']
+        true_offset, true_cls = self.assign(true_boxes_bc, true_classes)        
+        # add the true pbox offset and true pbox classes to sample dictionary
+        sample['pbox_offset'] = true_offset
+        sample['pbox_cls'] = true_cls
+        return sample
+        
+    def assign(self, true_boxes_bc, true_classes):
+        # number of ground truth objects to assign
+        n_objs = true_boxes_bc.size(0)
+        
+        # init zero contains for true location offset and classes
+        true_offset = torch.zeros((self.n_pboxes, 4), dtype=torch.float)
+        true_cls    = torch.zeros((self.n_pboxes),    dtype=torch.long)
 
+        # ---------------------------------------------------------------------------------
+        # i. compute IoU overlaps between object boxes and prior boxes
+        # ---------------------------------------------------------------------------------
+        # find overlap of each ground truth objects with each of the prior bboxes
+        # (note: that both set of boxes need to be in boundary-coordinate format)
+        iou = find_jaccard_overlap(true_boxes_bc, self.pboxes_bc)  # (n_objects, 8732)
 
-def find_jaccard_overlap(set_1, set_2):
-    """
-    Find the Jaccard Overlap (IoU) of every box combination between two sets of boxes that are in boundary coordinates.
-    :param set_1: set 1, a tensor of dimensions (n1, 4)
-    :param set_2: set 2, a tensor of dimensions (n2, 4)
-    :return: Jaccard Overlap of each of the boxes in set 1 with respect to each of the boxes in set 2, a tensor of dimensions (n1, n2)
-    
-    Code from: https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection/blob/master/utils.py
-    """    
-    # Find intersections
-    intersection = find_intersection(set_1, set_2)  # (n1, n2)
+        # ---------------------------------------------------------------------------------
+        # ii. find best pbox for each object based on best IoU & suppress background objects
+        # ---------------------------------------------------------------------------------
+        # for each prior boxes, find the ground truth object that overlaps the most with it
+        obj_overlap_with_pbox, obj_assigned_to_pbox = iou.max(dim=0)  # (8732)
+        # conversely, for each object, find the prior boxes that ooverlaps the most with it
+        _, best_pbox_for_obj = iou.max(dim=1)  # (n_objects)
 
-    # Find areas of each box in both sets
-    areas_set_1 = (set_1[:, 2] - set_1[:, 0]) * (set_1[:, 3] - set_1[:, 1])  # (n1)
-    areas_set_2 = (set_2[:, 2] - set_2[:, 0]) * (set_2[:, 3] - set_2[:, 1])  # (n2)
+        # ---------------------------------------------------------------------------------
+        # iii. fix potential issues due to poor overlaping between object & prior boxes
+        # ---------------------------------------------------------------------------------
+        # one potential problem is poor overlap between object and any prior boxes
+        # in this case, make sure each object is assign to the prior boxes with most overlap
+        obj_assigned_to_pbox[best_pbox_for_obj] = torch.LongTensor(range(n_objs))
+        # get object class label for each prior bounding box
+        obj_cls_for_pbox = true_classes[obj_assigned_to_pbox]
 
-    # Find the union
-    # PyTorch auto-broadcasts singleton dimensions
-    union = areas_set_1.unsqueeze(1) + areas_set_2.unsqueeze(0) - intersection  # (n1, n2)
+        # also ensure each object is captured by at least one prior box; manually change 
+        # the overlap to 1 to avoid it getting assigned to background object after thresholding
+        obj_overlap_with_pbox[best_pbox_for_obj] = 1.
+        # for all other pboxes with overlap less than threshold, assign them to background object
+        obj_cls_for_pbox[obj_overlap_with_pbox < self.threshold] = 0
 
-    return intersection / union  # (n1, n2)
+        # ---------------------------------------------------------------------------------
+        # iv. record the ground truths for this image
+        # ---------------------------------------------------------------------------------        
+        # compute the offset coordinates of object locations relative to prior boxes
+        true_boxes_cc  = self.boundaryCoord.decode(true_boxes_bc)
+        pboxes_cc      = self.boundaryCoord.decode(self.pboxes_bc)
+        true_offset    = self.offsetCoord.encode(true_boxes_cc[obj_assigned_to_pbox], pboxes_cc)
+        # add true object class label allocation for each prior bounding box
+        true_cls = obj_cls_for_pbox       
+        
+        return true_offset, true_cls

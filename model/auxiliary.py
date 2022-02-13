@@ -24,13 +24,13 @@ class AuxLayers(nn.Module):
         self.conv10 = add_module({
             'conv10_1': nn.Conv2d(256, 128, kernel_size=1, padding=0),
             'relu10_1': nn.ReLU(inplace=True),
-            'conv10_2': nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            'conv10_2': nn.Conv2d(128, 256, kernel_size=3, padding=0),
             'ftmap10' : nn.ReLU(inplace=True)
         })
         self.conv11 = add_module({
             'conv11_1': nn.Conv2d(256, 128, kernel_size=1, padding=0),
             'relu11_1': nn.ReLU(inplace=True),
-            'conv11_2': nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            'conv11_2': nn.Conv2d(128, 256, kernel_size=3, padding=0),
             'ftmap11' : nn.ReLU(inplace=True)
         })    
         # init layer parameters
@@ -43,9 +43,10 @@ class AuxLayers(nn.Module):
                         
                 
     def forward(self, x):
-        ftmap8 = self.conv8(x)        
-        ftmap9 = self.conv9(ftmap8)
-        ftmap10 = self.conv10(ftmap9)
-        ftmap11 = self.conv11(ftmap10)
+        ftmap8  = self.conv8(x)          # (N, 512, 10, 10)
+        ftmap9  = self.conv9(ftmap8)     # (N, 256, 5, 5)
+        ftmap10 = self.conv10(ftmap9)    # (N, 256, 3, 3)
+        ftmap11 = self.conv11(ftmap10)   # (N, 256, 1, 1)
+        
         # return feature maps
         return ftmap8, ftmap9, ftmap10, ftmap11

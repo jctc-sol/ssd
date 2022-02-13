@@ -20,16 +20,16 @@ class Locators(nn.Module):
         super(Locators, self).__init__()
         
         # localizations
-        self.loc4 = nn.Conv2d(512, n_boxes['ftmap4']*4, kernel_size=3, padding=1)
-        self.loc7 = nn.Conv2d(1024, n_boxes['ftmap7']*4, kernel_size=3, padding=1)
-        self.loc8 = nn.Conv2d(512, n_boxes['ftmap8']*4, kernel_size=3, padding=1)
-        self.loc9 = nn.Conv2d(256, n_boxes['ftmap9']*4, kernel_size=3, padding=1)
+        self.loc4  = nn.Conv2d(512, n_boxes['ftmap4']*4, kernel_size=3, padding=1)
+        self.loc7  = nn.Conv2d(1024, n_boxes['ftmap7']*4, kernel_size=3, padding=1)
+        self.loc8  = nn.Conv2d(512, n_boxes['ftmap8']*4, kernel_size=3, padding=1)
+        self.loc9  = nn.Conv2d(256, n_boxes['ftmap9']*4, kernel_size=3, padding=1)
         self.loc10 = nn.Conv2d(256, n_boxes['ftmap10']*4, kernel_size=3, padding=1)
         self.loc11 = nn.Conv2d(256, n_boxes['ftmap11']*4, kernel_size=3, padding=1)
     
     
     def forward(self, ftmap4, ftmap7, ftmap8, ftmap9, ftmap10, ftmap11):
-        bs = ftmap4.size(0)     # get batch size
+        bs = ftmap4.size(0)     # get batch size        
         x = self.loc4(ftmap4)                 # (N, 16, 38, 38)
         loc4 = permute_reshape(x, bs, 4)      # (N, 5776, 4), for a total of 5776 prior bounding boxes
         x = self.loc7(ftmap7)                 # (N, 24, 19, 19)
@@ -42,6 +42,7 @@ class Locators(nn.Module):
         loc10 = permute_reshape(x, bs, 4)     # (N, 36, 4)
         x = self.loc11(ftmap11)               # (N, 16, 1, 1)
         loc11 = permute_reshape(x, bs, 4)     # (N, 4, 4)
+
         return loc4, loc7, loc8, loc9, loc10, loc11
 
 
@@ -54,15 +55,15 @@ class Classifiers(nn.Module):
         self.n_cls = n_cls # get # of class categories
         
         # classifications
-        self.cls4 = nn.Conv2d(512, n_boxes['ftmap4']*n_cls, kernel_size=3, padding=1)
-        self.cls7 = nn.Conv2d(1024, n_boxes['ftmap7']*n_cls, kernel_size=3, padding=1)
-        self.cls8 = nn.Conv2d(512, n_boxes['ftmap8']*n_cls, kernel_size=3, padding=1)
-        self.cls9 = nn.Conv2d(256, n_boxes['ftmap9']*n_cls, kernel_size=3, padding=1)
+        self.cls4  = nn.Conv2d(512, n_boxes['ftmap4']*n_cls, kernel_size=3, padding=1)
+        self.cls7  = nn.Conv2d(1024, n_boxes['ftmap7']*n_cls, kernel_size=3, padding=1)
+        self.cls8  = nn.Conv2d(512, n_boxes['ftmap8']*n_cls, kernel_size=3, padding=1)
+        self.cls9  = nn.Conv2d(256, n_boxes['ftmap9']*n_cls, kernel_size=3, padding=1)
         self.cls10 = nn.Conv2d(256, n_boxes['ftmap10']*n_cls, kernel_size=3, padding=1)
         self.cls11 = nn.Conv2d(256, n_boxes['ftmap11']*n_cls, kernel_size=3, padding=1)
     
     
-    def forward(self, ftmap4, ftmap7, ftmap8, ftmap9, ftmap10, ftmap11):
+    def forward(self, ftmap4, ftmap7, ftmap8, ftmap9, ftmap10, ftmap11):                
         bs = ftmap4.size(0) # get batch size
         x = self.cls4(ftmap4)                      # (N, 4 boxes * n_classes, 38, 38)
         cls4 = permute_reshape(x, bs, self.n_cls)  # (N, 5776, n_classes)
@@ -111,7 +112,7 @@ class PredLayers(nn.Module):
         he_init(self.classifiers.children(), **kaiming_params)
 
         
-    def forward(self, ftmap4, ftmap7, ftmap8, ftmap9, ftmap10, ftmap11):
+    def forward(self, ftmap4, ftmap7, ftmap8, ftmap9, ftmap10, ftmap11):        
         # localizations
         loc4, loc7, loc8, loc9, loc10, loc11 = self.locators(ftmap4, ftmap7, ftmap8, ftmap9, ftmap10, ftmap11)
         # classifications

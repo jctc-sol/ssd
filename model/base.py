@@ -18,7 +18,7 @@ class VGGBase(nn.Module):
             'relu1_1' : nn.ReLU(inplace=True),
             'conv1_2' : nn.Conv2d(64, 64, kernel_size=3, padding=1),
             'relu1_2' : nn.ReLU(inplace=True),
-            'ftmap1'  : nn.MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)
+            'maxpool1': nn.MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)
         })
         
         self.conv2 = add_module({            
@@ -27,7 +27,7 @@ class VGGBase(nn.Module):
             'relu2_1' : nn.ReLU(inplace=True),
             'conv2_2' : nn.Conv2d(128, 128, kernel_size=3, padding=1),
             'relu2_2' : nn.ReLU(inplace=True),
-            'ftmap2'  : nn.MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)
+            'maxpool2': nn.MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)
         })
         
         self.conv3 = add_module({
@@ -38,7 +38,7 @@ class VGGBase(nn.Module):
             'relu3_2' : nn.ReLU(inplace=True),
             'conv3_3' : nn.Conv2d(256, 256, kernel_size=3, padding=1),
             'relu3_3' : nn.ReLU(inplace=True),
-            'ftmap3'  : nn.MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)
+            'maxpool3': nn.MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=True)
         })
 
         self.conv4 = add_module({            
@@ -48,8 +48,11 @@ class VGGBase(nn.Module):
             'conv4_2' : nn.Conv2d(512, 512, kernel_size=3, padding=1),
             'relu4_2' : nn.ReLU(inplace=True),
             'conv4_3' : nn.Conv2d(512, 512, kernel_size=3, padding=1),
-            'relu4_3' : nn.ReLU(inplace=True),
-            'ftmap4'  : nn.MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)
+            'relu4_3' : nn.ReLU(inplace=True)            
+        })
+        
+        self.maxpool4 = add_module({
+            'maxpool4' : nn.MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)
         })
         
         self.conv5 = add_module({
@@ -60,11 +63,9 @@ class VGGBase(nn.Module):
             'relu5_2' : nn.ReLU(inplace=True),
             'conv5_3' : nn.Conv2d(512, 512, kernel_size=3, padding=1),
             'relu5_3' : nn.ReLU(inplace=True),
-            'ftmap5'  : nn.MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)
+            'maxpool5': nn.MaxPool2d(kernel_size=3, stride=1, padding=1)
         })
         
-        self.avgPool  = nn.AdaptiveAvgPool2d(output_size=(7, 7))
-
         self.conv6 = add_module({
             # convs6
             'conv6'  : nn.Conv2d(512, 1024, kernel_size=3, padding=6, dilation=6),  # atrous convolution
@@ -126,12 +127,13 @@ class VGGBase(nn.Module):
 
         
     def forward(self, x):
-        x = self.conv1(x)
-        x = self.conv2(x)
-        x = self.conv3(x)
-        ftmap4 = self.conv4(x)
-        x = self.conv5(ftmap4)
-        x = self.avgPool(x)
-        x = self.conv6(x)
-        ftmap7 = self.conv7(x)
+        x = self.conv1(x)         # (N, 64, 150, 150)
+        x = self.conv2(x)         # (N, 128, 75, 75)
+        x = self.conv3(x)         # (N, 256, 38, 38)
+        ftmap4 = self.conv4(x)    # (N, 512, 38, 38)
+        x = self.maxpool4(ftmap4) # (N, 512, 19, 19)
+        x = self.conv5(x)         # (N, 512, 19, 19)
+        x = self.conv6(x)         # (N, 1024, 19, 19)
+        ftmap7 = self.conv7(x)    # (N, 1024, 19, 19)
+
         return ftmap4, ftmap7

@@ -102,13 +102,19 @@ class CocoDataset(Dataset):
         cats   = list()
         boxes  = list()
         dims   = list()
+        pbox_offsets = list()
+        pbox_classes = list()
         for sample in batch:
             images.append(sample['image'].unsqueeze(0))
             segs.append(sample['segs'])
             cats.append(sample['cats'])
             boxes.append(sample['boxes'])
             dims.append(sample['dims'])
-        
+            if 'pbox_offset' in sample.keys():
+                pbox_offsets.append(sample['pbox_offset'].unsqueeze(0))
+            if 'pbox_cls' in sample.keys():
+                pbox_classes.append(sample['pbox_cls'].unsqueeze(0))
+                    
         # if images have already been resized to same shape, then combine them into a 
         # single 4-D tensor of (B, C, H, W)
         if img_resized:
@@ -118,6 +124,8 @@ class CocoDataset(Dataset):
                  'segs': segs,
                  'cats': cats,
                  'boxes': boxes,
-                 'dims': dims
+                 'dims': dims,
+                 'pbox_offsets': pbox_offsets,
+                 'pbox_classes': pbox_classes
                 }
         return batch
