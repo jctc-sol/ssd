@@ -13,12 +13,14 @@ class Loss(nn.Module):
     Code reference: https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection/blob/master/model.py#L532
     """
     
-    def __init__(self, neg_pos_ratio=3, alpha=1., device=None):
+    def __init__(self, neg_pos_ratio=3, alpha=1., loc_loss_tracker=None, cls_loss_tracker=None, device=None):
         """
         :param pboxes: prior bounding boxes of object detection model, provided in center coordinates
         :param threshold: cutoff threshold on IoU overlap between a pair of true object box and prior bounding box
         :param neg_pos_ratio: ratio to be used in hard negative sample minning
         :param alpha: relative weighting between localization & classification losses
+        :param loc_loss_tracker: scalar value tracker to track the loss history for location loss
+        :param cls_loss_tracker: scalar value tracker to track the loss history for classification loss 
         """
         super(Loss, self).__init__()        
 
@@ -28,6 +30,8 @@ class Loss(nn.Module):
         # localization/classification losses
         self.loc_loss = nn.L1Loss()
         self.cls_loss = nn.CrossEntropyLoss(reduction='none')
+        self.loc_loss_tracker = loc_loss_tracker
+        self.cls_loss_tracker = cls_loss_tracker
         
         
     def forward(self, pred_boxes, pred_scores, true_locs, true_cls):
@@ -88,9 +92,14 @@ class Loss(nn.Module):
         
             # COMBINED CLASSIFICATION LOSS
             # As in the paper, averaged over positive priors only, although computed over both positive and hard-negative priors
-            cls_loss = (cls_loss_pos + cls_loss_hard_neg) / n_positives
+            # and averaged across number of possible classes
+            cls_loss = (cls_loss_pos + cls_loss_hard_neg) / n_positives / n_classes
         else:
             cls_loss = cls_loss_pos
 
+        if self.loc_loss_tracker: self.loc_loss_tracker.update(loc_loss.item())
+        if self.cls_loss_tracker: self.cls_loss_tracker.update(cls_loss.item())
+        print(f'location loss: {loc_loss.item()}')
+        print(f'class loss: {cls_loss.item()}')
         # total loss
         return loc_loss + self.alpha * cls_loss
