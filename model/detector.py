@@ -159,7 +159,7 @@ class SSD300(nn.Module):
                 
                 # compute jaccard overlap between all class boxes; returns
                 # size (n_above_min_score, n_above_min_score)
-                overlap = find_jaccard_overlap(class_boxes, class_boxes) 
+                overlap = find_jaccard_overlap(class_boxes, class_boxes)
 
                 # Non-Maximum Suppression (NMS)
                 # init a torch.uint8 (byte) tensor to keep track of which predicted boxes to suppress
