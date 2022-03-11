@@ -102,4 +102,4 @@ class Loss(nn.Module):
         print(f'location loss: {loc_loss.item()}')
         print(f'class loss: {cls_loss.item()}')
         # total loss
-        return loc_loss + self.alpha * cls_loss
+        return (loc_loss + self.alpha * cls_loss) * 1000

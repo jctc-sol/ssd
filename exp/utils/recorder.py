@@ -20,9 +20,11 @@ class Recorder(object):
         
         
     def update(self, val, wgt=1):
-        # check for invalid input value
+        # check for infinite input value
         if val == float("inf"): val = 1e12
         elif val == -1*float("inf"): val = -1e12
+        # check for nan input values
+        if val == np.nan: return
         # update running stats
         self.val = val
         self.sum += val*wgt

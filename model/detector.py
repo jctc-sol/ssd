@@ -4,6 +4,8 @@ from model.base import VGGBase
 from model.auxiliary import AuxLayers
 from model.prediction import PredLayers
 from model.utils import add_module, create_pboxes
+from utils.coordinates import BoundaryCoord, OffsetCoord
+from utils.overlap import find_jaccard_overlap
 
 
 class AdaptiveScaler(nn.Module):
@@ -41,12 +43,12 @@ class SSD300(nn.Module):
         self.pboxes = create_pboxes()
         self.pboxes.to(self.device)
         
-#         # instantiate a coordinate transformation object to decipher object location
-#         # output in prior box offset coordinate format to center coordinate format
-#         self.oc2cc = OffsetCoord()
-#         # instantiate a coordinate transformation object to decipher object location
-#         # output in center coordinate format to boundary box coordinate format
-#         self.cc2bc = BoundaryCoord()
+        # instantiate a coordinate transformation object to decipher object location
+        # output in prior box offset coordinate format to center coordinate format
+        self.oc2cc = OffsetCoord()
+        # instantiate a coordinate transformation object to decipher object location
+        # output in center coordinate format to boundary box coordinate format
+        self.cc2bc = BoundaryCoord()
         
 
     def fine_tune(self, freeze=True):
@@ -78,7 +80,7 @@ class SSD300(nn.Module):
         return locations, cls_scores
 
 
-    def detect_objects(self, predicted_boxes, predicted_scores, min_score_threshold, max_overlap_threshold, top_k):
+    def detect_objects(self, offsets_pred, cls_scores_pred, nms_threshold, cls_score_threshold, top_k):
         """
         Post-process the prediction from the SSD output that applies Non-Maximum Suppression (NMS)
         based on `min_score`, `max_overlap`, and `top_k` criteria to reduce the number of resulting
@@ -87,15 +89,14 @@ class SSD300(nn.Module):
         For each below, let M be `batch_size`, `n_i` is the number of predicted objects in each image, and 
         `N_i` is the number of true objects in each image.
         
-        :param predicted_boxes: predicted locators in offset coordinates w.r.t the 8732 prior anchor/bounding 
-                                boxes, a tensor of dimensions (M, 8732, 4)
-        :param predicted_scores: predicted class scores for each of the 8732 prior anchor/bounding box locations, 
-                                 a tensor of dimensions (M, 8732, n_classes)
-        :param min_score_threshold: minimum score threshold to apply against the class score to be considered a 
+        :param offsets_pred: predicted bounding box offset coordinates w.r.t the 8732 prior anchor 
+                             boxes, a tensor of dimensions (M, 8732, 4)
+        :param cls_scores_pred: predicted class scores for each of the 8732 prior anchor/bounding box locations, 
+                                a tensor of dimensions (M, 8732, n_classes)
+        :param nms_threshold: non-max suppression threshold for eliminating overlapping canidate bounding regions
+        :param cls_score_threshold: minimum score threshold to apply against the class score to be considered a 
                                     match for a certain class
-        :param max_overlap_threshold: maximum overlap ratio two boxes can have so that the one with the lower 
-                                      score is not suppressed via NMS
-        :param top_k: if there are a lot of resulting detection across all classes, keep only the top 'k'
+        :param top_k: if there are a lot of resulting detection boxes, keep only the top 'k'
 
         :return: detected_boxes: M length list of tensors (n_i, 4) for detected bounding boxes after NMS
         :return: detected_labels: M length list of labels (n_i, n_classes) for detected class labels
@@ -103,14 +104,14 @@ class SSD300(nn.Module):
         
         Source ref: https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection/blob/master/model.py#L426
         """
-        batch_size = predicted_boxes.size(0)
-        n_priors   = self.prior_boxes.size(0)
-        # apply softmax to the class scores
-        predicted_scores = F.softmax(predicted_scores, dim=2)
+        batch_size = offsets_pred.size(0)
+        n_priors   = self.pboxes.size(0)
+        # apply softmax to the prediction class scores
+        cls_scores_pred = nn.functional.softmax(cls_scores_pred, dim=2)
 
         # ensure # of prior boxes align across input location & score predictions
-        assert n_priors == predicted_boxes.size(1) == predicted_scores.size(1),\
-        "number of bbox location prediction & bbox class prediction mismatch"
+        assert n_priors == offsets_pred.size(1) == cls_scores_pred.size(1),\
+        "number of prior boxes, offset location prediction & bbox class prediction mismatch"
 
         # Lists to store final predicted boxes, labels, and scores for all images
         detected_boxes  = list()
@@ -131,21 +132,22 @@ class SSD300(nn.Module):
             predicted_boxes_bc = self.cc2bc.encode(
                 # decode predicted_boxes from offset coordinates to center coordinates
                 # note that self.prior_boxes are in center coordinates
-                self.oc2cc.decode(predicted_boxes[i], self.prior_boxes)
+                self.oc2cc.decode(offsets_pred[i], self.pboxes)
             )  # size (8732, 4)
             
-            # determine the most probable class & score from the softmax of predicted_scores
-            max_scores, pedicted_labels = predicted_scores[i].max(dim=1)  # size (8732)
+            # determine the most probable class & score from the softmax of cls_scores_pred
+            max_scores, pedicted_labels = cls_scores_pred[i].max(dim=1)  # size (8732)
+
 
             # iterate through each class (except for class 0 which is reserved for background)
             for c in range(1, self.n_classes):
                 
                 # get all scores belonging to this class that are above score threshold at each 
                 # prior bounding box locations
-                class_scores = predicted_scores[i][:, c]  # size (8732)
+                class_scores = cls_scores_pred[i][:, c]  # size (8732)
                 # note: torch.uint8 (byte) tensor; this can be used to locate the set of 
                 # prior bounding boxes with class score above threshold
-                score_above_min_score = class_scores > min_score_threshold
+                score_above_min_score = class_scores > cls_score_threshold
                 # skip remainder steps if there are no scores above threshold
                 n_above_min_score = score_above_min_score.sum().item()
                 if n_above_min_score == 0:
@@ -173,7 +175,7 @@ class SSD300(nn.Module):
                         continue
                     # Suppress boxes whose overlaps (with this box) are greater than maximum overlap
                     # Find such boxes and update suppress indices
-                    suppression_idx = torch.max(suppression_idx, overlap[box] > max_overlap_threshold)
+                    suppression_idx = torch.max(suppression_idx, overlap[box] > nms_threshold)
                     # The max operation retains previously suppressed boxes, like an 'OR' operation
                     # Don't suppress this box, even though it has an overlap of 1 with itself
                     suppression_idx[box] = 0
@@ -182,6 +184,8 @@ class SSD300(nn.Module):
                 image_boxes.append(class_boxes[1 - suppression_idx])
                 image_labels.append(torch.LongTensor((1 - suppression_idx).sum().item() * [c]).to(self.device))
                 image_scores.append(class_scores[1 - suppression_idx])
+
+
 
             # If no object in any class is found, store a placeholder for 'background'
             if len(image_boxes) == 0:
